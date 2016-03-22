@@ -27,7 +27,4 @@ public class BottomBorder extends GameObject {
     public void draw(Canvas canvas) {
         canvas.drawBitmap(image,x,y,null);
     }
-    public BottomBorder() {
-
-    }
 }

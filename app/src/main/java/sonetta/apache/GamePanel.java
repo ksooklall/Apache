@@ -1,14 +1,17 @@
 package sonetta.apache;
 
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.Typeface;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-
 import java.util.ArrayList;
 import java.util.Random;
 
@@ -33,12 +36,62 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
     private int minBorderHeight;
     private boolean topDown = true;
     private boolean botDown = true;
+    private boolean newGameCreated;
     private int progressDenom = 20;
+    private Explosion explosion;
+    private long startReset;
+    private boolean reset;
+    private boolean disappear;
+    private boolean started;
+    private int best;
 
     public GamePanel(Context context) {
         super(context);
         getHolder().addCallback(this);
         setFocusable(true);
+    }
+
+    public void begin() {
+        disappear = false;
+        topBorders.clear();
+        bottomBorders.clear();
+        missiles.clear();
+        smokepuffs.clear();
+
+        minBorderHeight = 5;
+        maxBorderHeight = 30;
+
+        player.setY(HEIGHT/2);
+        player.resetScore();
+        player.resetDY();
+
+        if(player.getScore()>best) {
+            best = player.getScore();
+        }
+
+        // Create initial topBorders to fill start screen
+        for(int i = 0; i*20<WIDTH+40; i++) {
+            if(i==0) {
+                topBorders.add(new TopBorder(BitmapFactory.decodeResource(getResources(),R.drawable.brick),
+                        i*20,0,10));
+            } else {
+                topBorders.add(new TopBorder(BitmapFactory.decodeResource(getResources(),R.drawable.brick),
+                        i*20,0,topBorders.get(i-1).height+1));
+            }
+        }
+
+        // Create initial bottomBorders to fill start screen
+        for(int i = 0; i*20<WIDTH+40; i++) {
+            if(i==0) { // First border created
+                bottomBorders.add(new BottomBorder(BitmapFactory.decodeResource(getResources(),R.drawable.brick),
+                        i*20,HEIGHT-minBorderHeight));
+            } else { // Adding bordering screen is filled
+                bottomBorders.add(new BottomBorder(BitmapFactory.decodeResource(getResources(),R.drawable.brick),
+                        i*20,bottomBorders.get(i-1).getY()-1));
+            }
+        }
+
+        newGameCreated = true;
     }
 
     @Override
@@ -72,6 +125,8 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
                 thread.setRunning(false);
                 thread.join();
                 retry = false;
+                // Set thread to null so garbage collector can pick up
+                thread = null;
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
@@ -80,6 +135,12 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
 
     public void update() {
         if(player.getPlaying()) {
+
+            if(bottomBorders.isEmpty() || topBorders.isEmpty()) {
+                player.setPlaying(false);
+                return;
+            }
+
             background.update();
             player.update();
 
@@ -88,6 +149,19 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
             if(maxBorderHeight > HEIGHT/4) {
                 maxBorderHeight = HEIGHT/4;
             }
+
+            for(int i = 0; i<topBorders.size(); i++) {
+                if(collision(topBorders.get(i),player)) {
+                    player.setPlaying(false);
+                }
+            }
+
+            for(int i = 0; i<bottomBorders.size(); i++) {
+                if(collision(bottomBorders.get(i),player)) {
+                    player.setPlaying(false);
+                }
+            }
+
             this.updateBottomBorder();
             this.updateTopBorder();
 
@@ -98,7 +172,7 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
                             WIDTH+10,HEIGHT/2,45,15,player.getScore(),13));
                 } else {
                     missiles.add(new Missile(BitmapFactory.decodeResource(getResources(),R.drawable.missile),
-                            WIDTH+10,(int) (random.nextDouble()*HEIGHT),45,15,player.getScore(),13));
+                            WIDTH+10,(int) (random.nextDouble()*(HEIGHT-(2*maxBorderHeight))+maxBorderHeight),45,15,player.getScore(),13));
                 }
                 missileStartTime = System.nanoTime();
             }
@@ -127,11 +201,26 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
                     smokepuffs.remove(i);
                 }
             }
+        } else {
+            if(!reset) {
+                newGameCreated = false;
+                startReset = System.nanoTime();
+                reset = true;
+                disappear = true;
+                explosion = new Explosion(BitmapFactory.decodeResource(getResources(), R.drawable.explosion),
+                        player.getX(),player.getY()-player.getWidth()/2,100,100,25);
+            }
+
+            explosion.update();
+            long resetElapsed = (System.nanoTime()-startReset)/mili;
+            if(resetElapsed>2500 && !newGameCreated) {
+                this.begin();
+            }
         }
     }
 
     public boolean collision(GameObject a, GameObject b) {
-        return Rect.intersects(a.getRect(),b.getRect())?true:false;
+        return Rect.intersects(a.getRect(),b.getRect());
     }
 
     @Override
@@ -143,7 +232,9 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
             final int savedState = canvas.save();
             canvas.scale(scaleX, scaleY);
             background.draw(canvas);
-            player.draw(canvas);
+            if(!disappear) {
+                player.draw(canvas);
+            }
             for(Smokepuff sp:smokepuffs) {
                 sp.draw(canvas);
             }
@@ -156,32 +247,42 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
             for(BottomBorder bb:bottomBorders) {
                 bb.draw(canvas);
             }
+            if(started) {
+                explosion.draw(canvas);
+            }
+            this.drawText(canvas);
             canvas.restoreToCount(savedState);
         }
     }
 
-    public void updateBottomBorder() {
-        if(player.getScore()%50==0) {
-            topBorders.add(new TopBorder(BitmapFactory.decodeResource(getResources(),R.drawable.brick),
-                    topBorders.get(topBorders.size()-1).getX()+20,0,(int)(random.nextDouble()*maxBorderHeight)+1));
-        }
-        for(int i = 0; i<bottomBorders.size(); i++) {
-            bottomBorders.get(i).update();
-            if(bottomBorders.get(i).getX()<-bottomBorders.get(i).getWidth()) {
-                bottomBorders.remove(i);
-            }
+    public void drawText(Canvas canvas) {
+        Paint paint = new Paint();
+        paint.setColor(Color.BLACK);
+        paint.setTextSize(30);
+        paint.setTypeface(Typeface.create(Typeface.DEFAULT,Typeface.BOLD));
+        canvas.drawText("DISTANCE: " + (player.getScore()*3),10,HEIGHT-10,paint);
+        canvas.drawText("BEST: " + best, WIDTH-215, HEIGHT-10, paint);
+
+        // Once new game is created
+        if(!player.getPlaying() && newGameCreated && reset) {
+            Paint paint1 = new Paint();
+            paint1.setTextSize(50);
+            paint1.setTypeface(Typeface.create(Typeface.DEFAULT,Typeface.BOLD));
+            canvas.drawText("PRESS TO START",WIDTH/2,HEIGHT/2,paint);
+
+            paint1.setTextSize(30);
+            canvas.drawText("PRESS AND HOLD TO MOVE", WIDTH/2, HEIGHT/2+60,paint);
         }
     }
 
     public void updateTopBorder() {
-        //int currentSize = topBorders.size()-1;
-        if(player.getScore()%40==0) {
-            bottomBorders.add(new BottomBorder(BitmapFactory.decodeResource(getResources(),R.drawable.brick),
-                    bottomBorders.get(bottomBorders.size()-1).getX()+20,(int)(random.nextDouble()*maxBorderHeight)+
-                    (HEIGHT-maxBorderHeight)));
+        if(player.getScore()%50==0) {
+            topBorders.add(new TopBorder(BitmapFactory.decodeResource(getResources(),R.drawable.brick),
+                    topBorders.get(topBorders.size()-1).getX()+20,0,(int)(random.nextDouble()*maxBorderHeight)+1));
         }
-        for(int i = 0; i<bottomBorders.size(); i++) {
+        for(int i = 0; i<topBorders.size(); i++) {
             topBorders.get(i).update();
+            // Remove topBorders once off screen
             if(topBorders.get(i).getX()<-topBorders.get(i).getWidth()) {
                 topBorders.remove(i);
                 if(topBorders.get(topBorders.size()-1).getHeight()>=maxBorderHeight) {
@@ -200,13 +301,45 @@ public class GamePanel extends SurfaceView implements SurfaceHolder.Callback {
         }
     }
 
+    public void updateBottomBorder() {
+        if(player.getScore()%40==0) {
+            bottomBorders.add(new BottomBorder(BitmapFactory.decodeResource(getResources(),R.drawable.brick),
+                    bottomBorders.get(bottomBorders.size()-1).getX()+20,(int)(random.nextDouble()*maxBorderHeight)+
+                    (HEIGHT-maxBorderHeight)));
+        }
+        for(int i = 0; i<bottomBorders.size(); i++) {
+            // Update borders to move
+            bottomBorders.get(i).update();
+            // Remove bottomBorders once off screen
+            if(bottomBorders.get(i).getX()<-bottomBorders.get(i).getWidth()) {
+                bottomBorders.remove(i);
+                if(bottomBorders.get(bottomBorders.size()-1).getY()<=HEIGHT-maxBorderHeight) {
+                    botDown = true;
+                } else if (bottomBorders.get(bottomBorders.size()-1).getY()>=HEIGHT-minBorderHeight) {
+                    botDown = false;
+                }
+                if(botDown) {
+                    bottomBorders.add(new BottomBorder(BitmapFactory.decodeResource(getResources(), R.drawable.brick),
+                            bottomBorders.get(bottomBorders.size()-1).getX()+20,bottomBorders.get(bottomBorders.size()-1).getY()+1));
+                } else {
+                    bottomBorders.add(new BottomBorder(BitmapFactory.decodeResource(getResources(), R.drawable.brick),
+                            bottomBorders.get(bottomBorders.size()-1).getX()+20,bottomBorders.get(bottomBorders.size()-1).getY()-1));
+                }
+            }
+        }
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
 
         if(event.getAction()==MotionEvent.ACTION_DOWN) {
-            if(!player.getPlaying()) {
+            if(!player.getPlaying()&&newGameCreated&&reset) {
                 player.setPlaying(true);
-            } else {
+                player.setUp(true);
+            }
+            if(player.getPlaying()) {
+                if(!started) { started = true; }
+                reset = false;
                 player.setUp(true);
             }
             return true;
